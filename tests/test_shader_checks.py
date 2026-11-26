@@ -66,6 +66,9 @@ class TextureUavCheck(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.object(check.os, "name", "nt"):
             exe = check.os.path.join(tmp, "d3d12_texture_uav_test" + check.EXE)
             spv = check.os.path.join(tmp, "cs_texture_uav.spv")
+            self.assertIsInstance(check.texture_uav_test(tmp, spv), check.Skip)   # no Windows runtime in this build
+            with open(check.os.path.join(tmp, "d3d12_uav_clear_test" + check.EXE), "wb"):
+                pass   # a full build: its other D3D12 tests are there, so a missing program is a failure
             self.assertIn("missing", check.texture_uav_test(tmp, spv))
             with open(exe, "wb"):
                 pass

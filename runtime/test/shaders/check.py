@@ -18,6 +18,7 @@ vk_sampler_test needs.
 ps_texoff (texel offsets, on vk_texture_test's texture) is skipped on a device without VK_KHR_maintenance8.
 """
 import collections
+import glob
 import json
 import math
 import os
@@ -2191,12 +2192,21 @@ def clip_test(tools, spirv, name):
     return ""
 
 
+def has_d3d12_tests(tools):
+    """Whether the build folder holds any D3D12 test program, that is, whether it was built with the Windows runtime.
+    A build of the standalone Vulkan tools (LEONIDA_BUILD_WINDOWS_RUNTIME=OFF) and build_runtime.ps1's cl.exe
+    fallback have none."""
+    return bool(glob.glob(os.path.join(glob.escape(tools), "d3d12_*_test" + EXE)))
+
+
 def texture_uav_test(tools, spv):
     """The Windows D3D12 test compares every texel itself, through both Vulkan and WARP."""
     if os.name != "nt":
         return Skip("SKIP (needs the Windows D3D12 runtime)")
     exe = os.path.join(tools, "d3d12_texture_uav_test" + EXE)
     if not os.path.isfile(exe):
+        if not has_d3d12_tests(tools):   # a build without the Windows runtime cannot have it
+            return Skip("SKIP (needs the Windows D3D12 runtime; this build has no d3d12_*_test programs)")
         return f"missing {exe}"
     code, out = run(exe, spv)
     if code == UNSUPPORTED:

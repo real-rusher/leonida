@@ -215,7 +215,7 @@ class BindlessTestOnASmallPushConstantDevice(unittest.TestCase):
 
 class TextureUavFixture(unittest.TestCase):
     """Run the real filtered suite and checker, substituting only the external tools."""
-    def run_uav(self, code=0, message="", *, windows=True, compiled=True, executable=True):
+    def run_uav(self, code=0, message="", *, windows=True, compiled=True, executable=True, full_build=True):
         import check
 
         name = "cs_texture_uav"
@@ -226,6 +226,8 @@ class TextureUavFixture(unittest.TestCase):
             exe.parent.mkdir()
             if executable:
                 exe.touch()
+            if full_build:   # a build with the Windows runtime has its other D3D12 tests next to this one
+                (exe.parent / "d3d12_uav_clear_test.exe").touch()
             spv = root / "spirv" / f"{name}.spv"
             spv.parent.mkdir()
             spv.write_bytes(b"stale fixture")
@@ -266,7 +268,8 @@ class TextureUavFixture(unittest.TestCase):
         self.assertIn("1/1 passed", out)
 
     def test_unavailable_warp_and_non_windows_are_skips(self):
-        for options in (dict(code=77, message="SKIP: no D3D12 WARP adapter"), dict(windows=False)):
+        for options in (dict(code=77, message="SKIP: no D3D12 WARP adapter"), dict(windows=False),
+                        dict(executable=False, full_build=False)):   # no Windows runtime: standalone tools
             with self.subTest(options=options):
                 rc, out = self.run_uav(**options)
                 self.assertEqual(rc, 0, out)

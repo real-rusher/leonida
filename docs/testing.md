@@ -183,8 +183,10 @@ python -I scripts/run_gpu_tests.py --build runtime/build --filter cs_texture_uav
 ```
 
 Use the actual configuration subfolder for the executables with a multi-config generator. The native Windows
-case reports SKIP without WARP or a sufficiently capable Vulkan device; failed translation, a missing test
-executable on Windows, and readback mismatches fail the runner. Devices without sliced 3D views still run the 1D,
+case reports SKIP without WARP or a sufficiently capable Vulkan device, and in a build without the Windows runtime
+(`LEONIDA_BUILD_WINDOWS_RUNTIME=OFF`, or the cl.exe fallback of `scripts\build_runtime.ps1`), which has no
+`d3d12_*_test` programs; failed translation, a missing `d3d12_texture_uav_test` next to the other D3D12 test
+programs, and readback mismatches fail the runner. Devices without sliced 3D views still run the 1D,
 array and whole-mip cases and check that partial views are refused.
 
 CTest runs the same D3D-78 descriptor creation, copy, range/refusal and clear checks with `--descriptors-only`.
