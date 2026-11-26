@@ -195,6 +195,8 @@ def translate_tests(work, names):
         cmd.append("--f16-interp-fallback")
     if os.environ.get("LEONIDA_TEXOFF_FALLBACK") == "1":   # texel offsets without VK_KHR_maintenance8
         cmd.append("--texel-offset-fallback")
+    if os.environ.get("LEONIDA_MINLOD_FALLBACK") == "1":   # min-LOD clamps without shaderResourceMinLod
+        cmd.append("--min-lod-fallback")
     # 128-byte push constants: the tail in a set-1 uniform block. The values the test programs accept (vk_pc_tail.h).
     if (os.environ.get("LEONIDA_PC_TAIL_UBO") or "").strip().lower() in ("1", "true", "yes", "on"):
         cmd.append("--pc-tail-ubo")

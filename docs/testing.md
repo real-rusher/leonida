@@ -686,6 +686,14 @@ without it they're skipped, which is expected, not a failure. To test the fallba
 **for both `build.py` and `check.py`** (or for `run_gpu_tests.py`): the offset is then folded into the coordinate
 (`docs/design.md`, "Texel offsets"), and the +16/-32 sample is judged on every device.
 
+## GPUs without shaderResourceMinLod (Intel's Windows iGPU drivers)
+
+`ps_texture_cl`, `ps_texture_b_cl` and `ps_texture_grad_cl_a16` clamp the LOD with the `MinLod` image operand, which
+needs `shaderResourceMinLod`; without it they're skipped, which is expected, not a failure. To test the fallback, set
+`LEONIDA_MINLOD_FALLBACK=1` **for both `build.py` and `check.py`** (or for `run_gpu_tests.py`): the clamp then
+scales the sample's gradients instead (`docs/design.md`, "Min-LOD clamp forms"), and the modules declare no `MinLod`.
+`tests/test_min_lod_fallback.py` checks the arithmetic without a GPU.
+
 ## Fused multiply-add: GLSL Fma or OpFmaKHR
 
 `cs_fma_fused` checks that `v_fma_f32`, `v_fmac_f32`, `v_fmaak_f32`, `v_fmamk_f32` (and one `v_fma_f16`) round once, on

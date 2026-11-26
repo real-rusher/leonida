@@ -44,6 +44,7 @@ from check import frexp_ldexp_test   # binary32 and binary64 frexp, and v_ldexp_
 from check import judged_words, words_match   # dump words not judged on some devices (cs_signed_zero_nan)
 from check import TEXOFF_ARGS, texoff_problem   # ps_texoff's expected words and arguments live in check.py
 from check import TEXOFF_FALLBACK, texoff_env   # LEONIDA_TEXOFF_FALLBACK=1: texel offsets without maintenance8
+from check import MINLOD_FALLBACK   # LEONIDA_MINLOD_FALLBACK=1: min-LOD clamps without shaderResourceMinLod
 from check import gpu_test_timeout, timed_out   # per-program time limit (LEONIDA_GPU_TEST_TIMEOUT)
 from check import failure   # "exit <status>: <last lines>", check.py's detail for a program that exited non-zero
 from check import run_readback
@@ -943,6 +944,8 @@ def run_suite(a, work: str) -> int:
             cmd.append("--f16-interp-fallback")
         if TEXOFF_FALLBACK:   # image_sample*_o: offset folded into the coordinate, no VK_KHR_maintenance8
             cmd.append("--texel-offset-fallback")
+        if MINLOD_FALLBACK:   # image_sample*_cl: gradients scaled to the clamp, no shaderResourceMinLod
+            cmd.append("--min-lod-fallback")
         if MESH_COMPUTE:   # mesh shaders as compute writing to a buffer, drawn by tools/mesh_compute_vs.py
             cmd.append("--mesh-compute")
         if pc_tail_ubo():   # 128 push-constant bytes; heap base and code base from a uniform block at set 1

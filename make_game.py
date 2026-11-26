@@ -1383,8 +1383,8 @@ def shaders(game: str, work: str, jobs: int, emulate: bool = False, keep_emulate
             "translating again")
         drop(translated)
     # The translation also depends on the fallback flags (--no-float-controls, --bary-fallback,
-    # --texel-offset-fallback, --mesh-compute), so they are kept beside it like the wave64 mode. A folder from
-    # before the file existed was translated without them.
+    # --texel-offset-fallback, --min-lod-fallback, --mesh-compute, ...), so they are kept beside it like the
+    # wave64 mode. A folder from before the file existed was translated without them.
     flags_file = os.path.join(spirv, "translator_flags.txt")
     want_flags = translator_flags_setting(fallbacks)
     had_flags = read_shader_setting(flags_file)
@@ -1847,7 +1847,7 @@ WAVE64_MODES = ("auto", "on", "off")
 FALLBACK_FLAGS = (("--no-float-controls", "no_float_controls"), ("--bary-fallback", "bary_fallback"),
                   ("--texel-offset-fallback", "texel_offset_fallback"), ("--mesh-compute", "mesh_compute"),
                   ("--f16-interp-fallback", "f16_interp_fallback"), ("--pc-tail-ubo", "pc_tail_ubo"),
-                  ("--compact-spirv", "compact_spirv"))
+                  ("--compact-spirv", "compact_spirv"), ("--min-lod-fallback", "min_lod_fallback"))
 
 
 def fallback_flags(a) -> tuple[str, ...]:
@@ -3148,6 +3148,9 @@ def main() -> int:
     ap.add_argument("--texel-offset-fallback", action="store_true",
                     help="fold the run-time texel offset of image_sample*_o into the coordinate, for devices "
                          "without VK_KHR_maintenance8")
+    ap.add_argument("--min-lod-fallback", action="store_true",
+                    help="sample image_sample*_cl with gradients scaled to the LOD clamp instead of the MinLod "
+                         "operand, for devices without shaderResourceMinLod (Intel's Windows iGPU drivers)")
     ap.add_argument("--f16-interp-fallback", action="store_true",
                     help="16-bit interpolation from decoded halves the vertex/mesh shader exports instead of "
                          "PerVertexKHR inputs; on by itself when the runtime's GPU can't use them (MoltenVK)")

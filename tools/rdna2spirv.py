@@ -92,6 +92,10 @@ FMA_EXACT = False        # --fma exact: fused multiply-adds are emulated from si
 # maintenance8 outside gather. Implicit-LOD samples become Grad samples with the derivatives of the original
 # coordinate, so a per-pixel offset doesn't change the LOD. Gathers keep their Offset (shaderImageGatherExtended).
 TEXEL_OFFSET_FALLBACK = False
+# --min-lod-fallback: image_sample*_cl without shaderResourceMinLod (Intel's Windows iGPU drivers). The sample gets
+# no MinLod operand; it becomes a Grad sample whose gradients are scaled so that the LOD the device computes from them
+# is at least the clamp (Gen.min_lod_grads). Implicit-LOD forms take OpDPdx / OpDPdy of the coordinate (x 2^bias).
+MIN_LOD_FALLBACK = False
 FLOAT_CONTROLS = True    # False (--no-float-controls): no SignedZeroInfNanPreserve, for drivers without the property
 # --mesh-compute: mesh shaders become compute shaders (same workgroup size and code) for devices without
 # VK_EXT_mesh_shader. Instead of SetMeshOutputs and the mesh outputs, the epilogue writes the vertex and primitive
@@ -14196,7 +14200,8 @@ class Gen:
                 kind = kind[:-3]
                 if kind not in ("", "_b", "_c", "_c_b", "_d"):
                     raise Unsupported(op)
-                self.uses_minlod = True
+                if not MIN_LOD_FALLBACK:   # with the fallback: only where a MinLod operand is still emitted (below)
+                    self.uses_minlod = True
             # Address order after the offset: bias, z-compare, gradients, coordinates, LOD, clamp.
             bias = None
             if kind in ("_b", "_c_b"):
@@ -14280,6 +14285,26 @@ class Gen:
                 uv, grads_fb = self.texel_offset_fold(img, si, uv, off, n_off, ncoord, kind, implicit, fb_lod, bias,
                                                        a[3])
                 off = None
+            if minlod is not None and MIN_LOD_FALLBACK and (kind == "_d" or implicit):
+                # --min-lod-fallback: a Grad sample whose gradients give at least the clamp, and no MinLod operand.
+                # Implicit forms take the derivatives of the coordinate (x 2^bias), or the ones the texel-offset
+                # fallback already took. Outside the PS the implicit forms already sample at an explicit LOD.
+                if kind == "_d":
+                    base = grads
+                elif grads_fb is not None:
+                    base = grads_fb
+                else:
+                    base = self.implicit_grads(uv, ncoord, grad_width, bias if kind in ("_b", "_c_b") else None)
+                scaled = self.min_lod_grads(img, base, ncoord, grad_width, minlod, a[3])
+                if kind == "_d":
+                    grads = scaled
+                else:
+                    grads_fb = scaled
+                minlod = None
+            # A texel offset next to these gradients (the min-LOD fallback without the texel-offset one) stays the
+            # Offset operand; Grad takes it like the implicit forms do.
+            grad_off = "|Offset" if off is not None else ""
+            grad_off_v = f" {off}" if off is not None else ""
 
             def opnd(mask, args):
                 """Image operands in SPIR-V mask order: Bias / Lod, Offset (0x10), MinLod (0x80, implicit forms)."""
@@ -14297,8 +14322,8 @@ class Gen:
                 else:
                     self.emit(f"{res} = OpImageSampleExplicitLod %v4float {si} {uv} Grad {grads[0]} {grads[1]}")
             elif grads_fb is not None and not kind.startswith("_c"):
-                self.emit(f"{res} = OpImageSampleExplicitLod %v4float {si} {uv} Grad{'|MinLod' if minlod else ''} "
-                          f"{grads_fb[0]} {grads_fb[1]}{' ' + minlod if minlod else ''}")
+                self.emit(f"{res} = OpImageSampleExplicitLod %v4float {si} {uv} Grad{grad_off}{'|MinLod' if minlod else ''} "
+                          f"{grads_fb[0]} {grads_fb[1]}{grad_off_v}{' ' + minlod if minlod else ''}")
             elif kind == "":
                 self.emit(f"{res} = OpImageSampleImplicitLod %v4float {si} {uv}{opnd('', '')}" if self.stage == "ps" else
                           f"{res} = OpImageSampleExplicitLod %v4float {si} {uv}{opnd('Lod', lod_zero)}")
@@ -14314,8 +14339,8 @@ class Gen:
                     d_lod = f[ncoord] if kind == "_c_l" else (bias_lod if kind == "_c_b" else lod_zero)
                     self.emit(f"{d} = OpImageSampleDrefExplicitLod %float {si} {uv} {ref}{opnd('Lod', d_lod)}")
                 elif grads_fb is not None:
-                    self.emit(f"{d} = OpImageSampleDrefExplicitLod %float {si} {uv} {ref} Grad{'|MinLod' if minlod else ''} "
-                              f"{grads_fb[0]} {grads_fb[1]}{' ' + minlod if minlod else ''}")
+                    self.emit(f"{d} = OpImageSampleDrefExplicitLod %float {si} {uv} {ref} Grad{grad_off}{'|MinLod' if minlod else ''} "
+                              f"{grads_fb[0]} {grads_fb[1]}{grad_off_v}{' ' + minlod if minlod else ''}")
                 elif kind == "_c_b":
                     self.emit(f"{d} = OpImageSampleDrefImplicitLod %float {si} {uv} {ref}{opnd('Bias', bias)}")
                 else:
@@ -15318,6 +15343,121 @@ class Gen:
                 dx, dy = sdx, sdy
             grads = (dx, dy)
         return out, grads
+
+    def implicit_grads(self, uv, ncoord, spatial, bias):
+        """OpDPdx / OpDPdy of the spatial part of uv (an array layer has none), scaled by 2^bias for a _b form: the
+        gradients an implicit-LOD sample would use, so that a Grad sample keeps its LOD and anisotropy."""
+        vf = {1: "%float", 2: "%v2float", 3: "%v3float"}[spatial]
+        uvs = uv
+        if ncoord > spatial:                              # 2D array / cube: (u, v, layer)
+            uvs = self.tmp()
+            self.emit(f"{uvs} = OpVectorShuffle %v2float {uv} {uv} 0 1")
+        dx, dy = self.tmp(), self.tmp()
+        self.emit(f"{dx} = OpDPdx {vf} {uvs}")
+        self.emit(f"{dy} = OpDPdy {vf} {uvs}")
+        if bias is not None:
+            e, sdx, sdy = self.tmp(), self.tmp(), self.tmp()
+            self.emit(f"{e} = OpExtInst %float %glsl Exp2 {bias}")
+            op = "OpFMul" if spatial == 1 else "OpVectorTimesScalar"
+            self.emit(f"{sdx} = {op} {vf} {dx} {e}")
+            self.emit(f"{sdy} = {op} {vf} {dy} {e}")
+            dx, dy = sdx, sdy
+        return dx, dy
+
+    def min_lod_grads(self, img, grads, ncoord, spatial, minlod, s_op):
+        """--min-lod-fallback: gradients that give at least the LOD clamp minlod, without the MinLod operand.
+
+        Vulkan's LOD from gradients (Texel Filtering, "Scale Factors and Level of Detail"): with rho_x and rho_y the
+        lengths of the gradients in texels of the base level, rho_max / rho_min their larger and smaller one and
+        eta = min(rho_max / rho_min, maxAnisotropy), lambda_base = log2(rho_max / eta); the sampler's mipLodBias is
+        added, and MinLod clamps that sum from below. Scaling both gradients by k moves rho_max and rho_min by k
+        and leaves eta alone, so it adds log2(k) to lambda exactly. Where lambda + bias < minlod the gradients are
+        rescaled to rho_max' = 2^(minlod - bias) * eta, which the device turns into LOD minlod; elsewhere they are
+        passed on as they are (x 1: bit for bit). maxAnisotropy and the bias are the S#'s as the runtime's
+        gfx10::vulkan_sampler sets them: 2^MAX_ANISO_RATIO (word 0 [11:9], at most 16) and LOD_BIAS (word 2 [13:0],
+        signed 5.8). Gradients shorter than 2^-100 texels (zero, NaN, or so small the LOD is below -100) become
+        isotropic ones of length 2^(minlod - bias) texels along x and y, the LOD clamped. The device's own LOD
+        arithmetic is implementation-defined within the spec's bounds, so at a mip boundary it can round the other
+        way than the native MinLod clamp would."""
+        self.uses_query = True
+        ci = lambda v: self.as_int(self.cu(v))
+        vf = {1: "%float", 2: "%v2float", 3: "%v3float"}[spatial]
+        vi = {1: "%int", 2: "%v2int", 3: "%v3int"}[spatial]
+        qtype = {1: "%int", 2: "%v2int", 3: "%v3int"}[ncoord]
+        sz = self.tmp()
+        self.emit(f"{sz} = OpImageQuerySizeLod {qtype} {img} {ci(0)}")   # level 0 of the view: the base level
+        if ncoord > spatial:                              # 2D array / cube: (width, height, layers)
+            szs = self.tmp()
+            self.emit(f"{szs} = OpVectorShuffle %v2int {sz} {sz} 0 1")
+            sz = szs
+        szf = self.tmp()
+        self.emit(f"{szf} = OpConvertSToF {vf} {sz}")
+        rho = []
+        for g in grads:
+            t, r = self.tmp(), self.tmp()
+            self.emit(f"{t} = OpFMul {vf} {g} {szf}")
+            self.emit(f"{r} = OpExtInst %float %glsl {'FAbs' if spatial == 1 else 'Length'} {t}")
+            rho.append(r)
+        rmax, rmin = self.tmp(), self.tmp()
+        self.emit(f"{rmax} = OpExtInst %float %glsl FMax {rho[0]} {rho[1]}")
+        self.emit(f"{rmin} = OpExtInst %float %glsl FMin {rho[0]} {rho[1]}")
+        w0 = self.sgpr_imm.get(s_op["r"])
+        if w0 is not None:
+            aniso = self.fconst(float(1 << min(w0 >> 9 & 7, 4)))
+        else:
+            fld, cap, n, aniso = self.tmp(), self.tmp(), self.tmp(), self.tmp()
+            self.emit(f"{fld} = OpBitFieldUExtract %uint {self.load_reg('sgpr', s_op['r'])} {self.cu(9)} {self.cu(3)}")
+            self.emit(f"{cap} = OpExtInst %uint %glsl UMin {fld} {self.cu(4)}")
+            self.emit(f"{n} = OpShiftLeftLogical %uint {self.cu(1)} {cap}")
+            self.emit(f"{aniso} = OpConvertUToF %float {n}")
+        w2 = self.sgpr_imm.get(s_op["r"] + 2)
+        if w2 is not None:
+            b14 = w2 & 0x3FFF
+            sbias = self.fconst(((b14 ^ 0x2000) - 0x2000) / 256.0)
+        else:
+            raw, si_, sbias = self.tmp(), self.tmp(), self.tmp()
+            self.emit(f"{raw} = OpBitFieldSExtract %uint {self.load_reg('sgpr', s_op['r'] + 2)} {self.cu(0)} {self.cu(14)}")
+            self.emit(f"{si_} = OpBitcast %int {raw}")
+            fl = self.tmp()
+            self.emit(f"{fl} = OpConvertSToF %float {si_}")
+            self.emit(f"{sbias} = OpFMul %float {fl} {self.fconst(1.0 / 256.0)}")
+        ratio, eta, q, lb, lam = (self.tmp() for _ in range(5))
+        self.emit(f"{ratio} = OpFDiv %float {rmax} {rmin}")          # +inf where rho_min is 0
+        self.emit(f"{eta} = OpExtInst %float %glsl FMin {ratio} {aniso}")
+        self.emit(f"{q} = OpFDiv %float {rmax} {eta}")
+        self.emit(f"{lb} = OpExtInst %float %glsl Log2 {q}")
+        self.emit(f"{lam} = OpFAdd %float {lb} {sbias}")
+        need, valid = self.tmp(), self.tmp()
+        self.emit(f"{need} = OpFOrdLessThan %bool {lam} {minlod}")
+        self.emit(f"{valid} = OpFOrdGreaterThan %bool {rmax} {self.fconst(2.0 ** -100)}")
+        # 2^(minlod - bias), the exponent held below 64 so that a wild clamp can't overflow it
+        d, dc, e = self.tmp(), self.tmp(), self.tmp()
+        self.emit(f"{d} = OpFSub %float {minlod} {sbias}")
+        self.emit(f"{dc} = OpExtInst %float %glsl FMin {d} {self.fconst(64.0)}")
+        self.emit(f"{e} = OpExtInst %float %glsl Exp2 {dc}")
+        target, k, kn = (self.tmp() for _ in range(3))
+        self.emit(f"{target} = OpFMul %float {e} {eta}")
+        self.emit(f"{k} = OpFDiv %float {target} {rmax}")
+        self.emit(f"{kn} = OpSelect %float {need} {k} {self.fconst(1.0)}")
+        out = []
+        for axis, g in enumerate(grads):
+            # the stand-in: 2^(minlod - bias) texels along this axis (x for dP/dx, y for dP/dy; 1D: x for both)
+            if spatial == 1:
+                unit = self.tmp()
+                self.emit(f"{unit} = OpFDiv %float {self.fconst(1.0 if axis == 0 else 0.0)} {szf}")
+            else:
+                comps = [self.fconst(1.0 if c == axis else 0.0) for c in range(spatial)]
+                one, unit = self.tmp(), self.tmp()
+                self.emit(f"{one} = OpCompositeConstruct {vf} {' '.join(comps)}")
+                self.emit(f"{unit} = OpFDiv {vf} {one} {szf}")
+            mul = "OpFMul" if spatial == 1 else "OpVectorTimesScalar"
+            gs, us, gn = self.tmp(), self.tmp(), self.tmp()
+            self.emit(f"{gs} = {mul} {vf} {g} {kn}")
+            self.emit(f"{us} = {mul} {vf} {unit} {e}")
+            # a select, not a blend: a NaN gradient times 0 would still be NaN
+            self.emit(f"{gn} = OpSelect {vf} {valid} {gs} {us}")
+            out.append(gn)
+        return out[0], out[1]
 
     def as_int(self, u):
         i = self.tmp()
@@ -20193,6 +20333,9 @@ def main():
     ap.add_argument("--texel-offset-fallback", action="store_true",
                     help="image_sample*_o without VK_KHR_maintenance8 (e.g. NVIDIA Pascal): fold the texel offset into "
                          "the coordinate instead of the Offset operand")
+    ap.add_argument("--min-lod-fallback", action="store_true",
+                    help="image_sample*_cl without shaderResourceMinLod (Intel's Windows iGPU drivers): no MinLod "
+                         "operand; a Grad sample whose gradients are scaled so the LOD is at least the clamp")
     ap.add_argument("--mesh-compute", action="store_true",
                     help="mesh shaders become compute shaders that write their vertices and primitives to a buffer "
                          "(metadata: mesh_compute), drawn by tools/mesh_compute_vs.py, for devices without "
@@ -20263,6 +20406,7 @@ def main():
     LOOP_LIMIT = a.loop_limit
     MAX_STRUCTURED_DEPTH = a.max_structured_depth
     global STRUCTURED, WAVE64_EMULATE, WAVE64_GRAPHICS, BARY_FALLBACK, TEXEL_OFFSET_FALLBACK, MESH_COMPUTE, FMA_KHR, SHADER_CLOCK, F16_HALVES, OPT_SPIRV
+    global MIN_LOD_FALLBACK
     global PC_TAIL_UBO, ADDRESS_GUARD
     PC_TAIL_UBO = a.pc_tail_ubo
     ADDRESS_GUARD = a.address_guard
@@ -20277,6 +20421,7 @@ def main():
     WAVE64_GRAPHICS = a.wave64_graphics
     BARY_FALLBACK = a.bary_fallback
     TEXEL_OFFSET_FALLBACK = a.texel_offset_fallback
+    MIN_LOD_FALLBACK = a.min_lod_fallback
     MESH_COMPUTE = a.mesh_compute
     F16_HALVES = a.f16_interp_fallback
     OPT_SPIRV = a.opt
