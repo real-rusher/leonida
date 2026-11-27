@@ -21,6 +21,42 @@ DEVICE_64 = "device: X (subgroup 32..64)\n"
 CONFIRMED = "compute subgroup size: 64\n"
 
 
+class MinLodFallbackSelection(unittest.TestCase):
+    """LEONIDA_MINLOD_FALLBACK=1/0 decides; unset, the device's shaderResourceMinLod does (cached per suite)."""
+
+    def setUp(self):
+        rgt._MIN_LOD.clear()
+        self.addCleanup(rgt._MIN_LOD.clear)
+
+    def test_env_override(self):
+        no_min_lod = SimpleNamespace(stdout='{"shader_resource_min_lod": false}\n')
+        for value, want in (("1", True), ("on", True), ("0", False), ("off", False)):
+            with self.subTest(value=value), patch.dict(os.environ, {"LEONIDA_MINLOD_FALLBACK": value}, clear=False), \
+                    patch.object(rgt.subprocess, "run", return_value=no_min_lod) as run:
+                self.assertIs(rgt.min_lod_fallback(), want)
+                run.assert_not_called()
+
+    def test_unset_follows_the_device(self):
+        for stdout, want in (('{"shader_resource_min_lod": false}\n', True),
+                             ('{"shader_resource_min_lod": true}\n', False),
+                             ('{"error": "RuntimeError: no Vulkan device"}\n', False),
+                             ('{"shader_resource_min_lod": 0}\n', False),
+                             ("not json\n", False), ("", False)):
+            rgt._MIN_LOD.clear()
+            env = {k: v for k, v in os.environ.items() if k != "LEONIDA_MINLOD_FALLBACK"}
+            with self.subTest(stdout=stdout), patch.dict(os.environ, env, clear=True), \
+                    patch.object(rgt.subprocess, "run", return_value=SimpleNamespace(stdout=stdout)):
+                self.assertIs(rgt.min_lod_fallback(), want)
+
+    def test_the_probe_runs_once(self):
+        env = {k: v for k, v in os.environ.items() if k != "LEONIDA_MINLOD_FALLBACK"}
+        proc = SimpleNamespace(stdout='{"shader_resource_min_lod": false}\n')
+        with patch.dict(os.environ, env, clear=True), patch.object(rgt.subprocess, "run", return_value=proc) as run:
+            self.assertTrue(rgt.min_lod_fallback())
+            self.assertTrue(rgt.min_lod_fallback())
+        self.assertEqual(run.call_count, 1)
+
+
 class BarycentricFallbackSelection(unittest.TestCase):
     def setUp(self):
         rgt._BARYCENTRIC_FALLBACK.clear()
@@ -131,6 +167,7 @@ class FrameReadbackTest(unittest.TestCase):
                       patch.object(rgt, "spirv_as"),
                       patch.object(rgt, "bary_fallback", return_value=False),
                       patch.object(rgt, "f16_interp_fallback", return_value=False),
+                      patch.object(rgt, "min_lod_fallback", return_value=False),
                       patch.object(rgt.subprocess, "run", side_effect=launch),
                       contextlib.redirect_stdout(output)):
                     self.assertEqual(rgt.run_suite(args, tmp), expected, output.getvalue())
@@ -247,6 +284,7 @@ class TextureUavFixture(unittest.TestCase):
                   patch.object(rgt, "run_cmd", side_effect=translate),
                   patch.object(rgt, "bary_fallback", return_value=False),
                   patch.object(rgt, "f16_interp_fallback", return_value=False),
+                  patch.object(rgt, "min_lod_fallback", return_value=False),
                   patch.object(check, "os", SimpleNamespace(name="nt" if windows else "posix", path=check.os.path,
                                                            environ=check.os.environ)),
                   patch.object(check, "EXE", ".exe"),

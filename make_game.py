@@ -2052,6 +2052,13 @@ def runtime_gpu_max_push_constants():
     return int(v) if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
 
 
+def runtime_gpu_min_lod():
+    """shader_resource_min_lod as tools/vk_subgroup_info.py answers for the GPU the runtime would use: False where a
+    module with the MinLod image operand can't be created (Intel's Windows iGPU driver), None when it can't tell."""
+    v = runtime_gpu_info().get("shader_resource_min_lod")
+    return v if isinstance(v, bool) else None
+
+
 # Source and data files that produce the translated modules, metadata, partner stubs and native PSO catalog.
 TRANSLATION_SOURCES = ("rdna2spirv.py", "shader_ir.py", "cfg_structure.py", "file_mode.py", "fssm_header.py", "lane_masks.py", "wave64_halves.py",
                        "wave64_emulate_opt.py", "spirv_loop_guard.py", "shader_meta.py", "spirv_stubs.py", "spirv_asm.py", "spirv_asm_tables.py",
@@ -3150,7 +3157,8 @@ def main() -> int:
                          "without VK_KHR_maintenance8")
     ap.add_argument("--min-lod-fallback", action="store_true",
                     help="sample image_sample*_cl with gradients scaled to the LOD clamp instead of the MinLod "
-                         "operand, for devices without shaderResourceMinLod (Intel's Windows iGPU drivers)")
+                         "operand, for devices without shaderResourceMinLod (Intel's Windows iGPU drivers); "
+                         "on by itself when tools/vk_subgroup_info.py reports such a GPU")
     ap.add_argument("--f16-interp-fallback", action="store_true",
                     help="16-bit interpolation from decoded halves the vertex/mesh shader exports instead of "
                          "PerVertexKHR inputs; on by itself when the runtime's GPU can't use them (MoltenVK)")
@@ -3278,6 +3286,14 @@ def main() -> int:
             log(f"shaders: the GPU the runtime would use reports maxPushConstantsSize = {max_pc} (< {need_pc}): "
                 "translating with --pc-tail-ubo")
             a.pc_tail_ubo = True
+    if "shaders" in stages and not a.min_lod_fallback:
+        min_lod = runtime_gpu_min_lod()
+        if min_lod is False:
+            log("shaders: the GPU the runtime would use has no shaderResourceMinLod (Intel's Windows iGPU driver): "
+                "translating with --min-lod-fallback")
+            a.min_lod_fallback = True
+        elif min_lod is None:
+            a.min_lod_fallback = keep_recorded_fallback("--min-lod-fallback", work)
     fallbacks = fallback_flags(a) if "shaders" in stages else ()
     overlap = True
     use_tui = leonida_tui.tui_eligible(a.no_tui)

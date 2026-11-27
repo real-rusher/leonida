@@ -71,6 +71,7 @@ class FakeDevice:
     )
     fragment_shader_barycentric: bool = True
     max_push_constants_size: int = 256
+    shader_resource_min_lod: bool = True
     driver_id: int = 1      # VK_DRIVER_ID_AMD_PROPRIETARY
     vendor_id: int = 0
     device_id: int = 0
@@ -227,7 +228,11 @@ class FakeVulkan:
         seen_types = set()
         for stype, node_addr in self._iter_chain(addr):
             seen_types.add(stype)
-            if stype == vk_info.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:
+            if stype == vk_info.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2:
+                ctypes.c_uint32.from_address(
+                    node_addr + vk_info.F2_SHADER_RESOURCE_MIN_LOD
+                ).value = int(dev.shader_resource_min_lod)
+            elif stype == vk_info.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:
                 ctypes.c_uint32.from_address(
                     node_addr + vk_info.F12_SEPARATE_DEPTH_STENCIL_LAYOUTS
                 ).value = int(dev.separate_depth_stencil_layouts)
@@ -819,6 +824,7 @@ class QueryTest(unittest.TestCase):
                     "per_vertex_inputs": True,
                     "barycentric_fallback": False,
                     "max_push_constants_size": 256,
+                    "shader_resource_min_lod": True,
                     "vendor_id": 0,
                     "device_id": 0,
                     "driver_id": 1,
@@ -832,6 +838,24 @@ class QueryTest(unittest.TestCase):
             with self.subTest(limit=limit):
                 res, _vk = self._run_query(FakeDevice(max_push_constants_size=limit))
                 self.assertEqual(res["max_push_constants_size"], limit)
+
+    def test_shader_resource_min_lod(self):
+        """VkPhysicalDeviceFeatures.shaderResourceMinLod (member 43, byte 188 of VkPhysicalDeviceFeatures2), for the
+        device that is picked; Intel's Windows iGPU driver reports it as false."""
+        self.assertEqual(vk_info.F2_SHADER_RESOURCE_MIN_LOD, 188)
+        for value in (True, False):
+            with self.subTest(min_lod=value):
+                res, _vk = self._run_query(FakeDevice(shader_resource_min_lod=value))
+                self.assertIs(res["shader_resource_min_lod"], value)
+        # the answer is the chosen device's, not the last one enumerated
+        res, _vk = self._run_query(
+            FakeDevice(name="discrete", shader_resource_min_lod=True),
+            FakeDevice(name="integrated", shader_resource_min_lod=False, device_type=1))
+        self.assertEqual((res["device"], res["shader_resource_min_lod"]), ("discrete", True))
+        res, _vk = self._run_query(
+            FakeDevice(name="integrated", shader_resource_min_lod=True, device_type=1),
+            FakeDevice(name="discrete", shader_resource_min_lod=False))
+        self.assertEqual((res["device"], res["shader_resource_min_lod"]), ("discrete", False))
 
     def test_per_vertex_inputs(self):
         """PerVertexKHR needs fragmentShaderBarycentric with its extension listed, and MoltenVK can't compile it to MSL

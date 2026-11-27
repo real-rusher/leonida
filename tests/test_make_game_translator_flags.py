@@ -191,7 +191,7 @@ class MainWiringTest(unittest.TestCase):
     """main() parses the fallback flags and hands the same tuple to preflight() and shaders()."""
 
     def run_main(self, *extra_argv, per_vertex=None, barycentric_fallback=None, max_push_constants=None,
-                 mesh_crash=False):
+                 mesh_crash=False, min_lod=None):
         # An empty --out: main() reads the flags an existing translation was made with, and the default folder
         # is the user's own.
         out = tempfile.TemporaryDirectory()
@@ -206,6 +206,7 @@ class MainWiringTest(unittest.TestCase):
                 mock.patch("make_game.runtime_gpu_barycentric_fallback", return_value=barycentric_fallback), \
                 mock.patch("make_game.runtime_gpu_max_push_constants", return_value=max_push_constants), \
                 mock.patch("make_game.runtime_gpu_mesh_draws_crash", return_value=mesh_crash), \
+                mock.patch("make_game.runtime_gpu_min_lod", return_value=min_lod), \
                 mock.patch("make_game.preflight") as preflight, \
                 mock.patch("make_game.shaders") as shaders, \
                 mock.patch("make_game.log"):
@@ -299,6 +300,25 @@ class MainWiringTest(unittest.TestCase):
             with mock.patch("make_game.runtime_gpu_info", return_value=raw):
                 self.assertEqual(make_game.runtime_gpu_mesh_draws_crash(), want, raw)
 
+    def test_min_lod_fallback_follows_the_device(self):
+        """On by itself where the GPU has no shaderResourceMinLod (Intel's Windows iGPU driver), not where it has it
+        or the probe can't tell; asked for explicitly, it is on everywhere."""
+        self.assertEqual(self.run_main(min_lod=False), (("--min-lod-fallback",),) * 2)
+        self.assertEqual(self.run_main(min_lod=True), ((), ()))
+        self.assertEqual(self.run_main(min_lod=None), ((), ()))
+        self.assertEqual(self.run_main("--min-lod-fallback", min_lod=True), (("--min-lod-fallback",),) * 2)
+        self.assertEqual(self.run_main(min_lod=False, max_push_constants=128),
+                         (("--pc-tail-ubo", "--min-lod-fallback"),) * 2)
+
+    def test_runtime_gpu_min_lod_reads_the_probe(self):
+        for raw, want in (({"shader_resource_min_lod": True}, True),
+                          ({"shader_resource_min_lod": False}, False),
+                          ({}, None),
+                          ({"shader_resource_min_lod": 0}, None),
+                          ({"shader_resource_min_lod": "false"}, None)):
+            with self.subTest(raw=raw), mock.patch("make_game.runtime_gpu_info", return_value=raw):
+                self.assertIs(make_game.runtime_gpu_min_lod(), want)
+
     def test_runtime_gpu_max_push_constants_parses_probe(self):
         for raw, want in (({"max_push_constants_size": 128}, 128),
                           ({"max_push_constants_size": 256}, 256),
@@ -318,7 +338,7 @@ class ProbeFailureKeepsAutomaticFlagsTest(RecordedFlagsTest):
 
     AUTOMATIC = ("--f16-interp-fallback", "--pc-tail-ubo")
 
-    def build(self, *extra_argv, per_vertex, max_push_constants, mesh_crash=False):
+    def build(self, *extra_argv, per_vertex, max_push_constants, mesh_crash=False, min_lod=True):
         """One `make_game.py --stages shaders` run: (the fallbacks of each translation it started, its log)."""
         translations, lines = [], []
 
@@ -345,6 +365,7 @@ class ProbeFailureKeepsAutomaticFlagsTest(RecordedFlagsTest):
                 mock.patch("make_game.runtime_gpu_barycentric_fallback", return_value=None), \
                 mock.patch("make_game.runtime_gpu_max_push_constants", return_value=max_push_constants), \
                 mock.patch("make_game.runtime_gpu_mesh_draws_crash", return_value=mesh_crash), \
+                mock.patch("make_game.runtime_gpu_min_lod", return_value=min_lod), \
                 mock.patch("make_game.preflight"), \
                 mock.patch.object(make_game, "py", fake_py), \
                 mock.patch.object(make_game, "need", lambda *a: None), \
@@ -390,6 +411,16 @@ class ProbeFailureKeepsAutomaticFlagsTest(RecordedFlagsTest):
         self.assertNotIn("stays on", log)
         # A first build with no probe answer and no folder: no automatic flag, as before.
         self.assertEqual(make_game.recorded_fallback_flags(os.path.join(self.work, "elsewhere")), ())
+
+    def test_a_probe_that_cannot_tell_keeps_min_lod_fallback(self):
+        both = ("--f16-interp-fallback", "--min-lod-fallback")
+        self.assertEqual(self.build(per_vertex=False, max_push_constants=256, min_lod=False)[0], [both])
+        translations, log = self.build(per_vertex=False, max_push_constants=256, min_lod=None)
+        self.assertEqual(translations, [])
+        self.assertIn("whether it needs --min-lod-fallback; the shaders were translated with it and it stays on", log)
+        # a GPU with the feature translates again without it
+        self.assertEqual(self.build(per_vertex=False, max_push_constants=256, min_lod=True)[0],
+                         [("--f16-interp-fallback",)])
 
     def test_the_other_flags_are_not_kept_by_a_failed_probe(self):
         # Only the two flags the probe decides are kept; one the user stops passing is dropped as before.

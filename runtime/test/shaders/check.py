@@ -1787,9 +1787,6 @@ def texoff_words(px, py, name="ps_texoff"):
 # LEONIDA_TEXOFF_FALLBACK=1 (set for build.py too): image_sample*_o was translated with --texel-offset-fallback, so
 # ps_texoff runs without VK_KHR_maintenance8 and every offset is defined, whatever the device's texel offset limits.
 TEXOFF_FALLBACK = os.environ.get("LEONIDA_TEXOFF_FALLBACK") == "1"
-# LEONIDA_MINLOD_FALLBACK=1 (set for build.py too): image_sample*_cl was translated with --min-lod-fallback, so the
-# clamp tests (CLAMP_TESTS, ps_texture_grad_cl_a16) run without shaderResourceMinLod: their modules have no MinLod.
-MINLOD_FALLBACK = os.environ.get("LEONIDA_MINLOD_FALLBACK") == "1"
 
 
 def texoff_problem(data, output, all_offsets=None, name="ps_texoff"):

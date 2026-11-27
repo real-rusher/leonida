@@ -44,7 +44,6 @@ from check import frexp_ldexp_test   # binary32 and binary64 frexp, and v_ldexp_
 from check import judged_words, words_match   # dump words not judged on some devices (cs_signed_zero_nan)
 from check import TEXOFF_ARGS, texoff_problem   # ps_texoff's expected words and arguments live in check.py
 from check import TEXOFF_FALLBACK, texoff_env   # LEONIDA_TEXOFF_FALLBACK=1: texel offsets without maintenance8
-from check import MINLOD_FALLBACK   # LEONIDA_MINLOD_FALLBACK=1: min-LOD clamps without shaderResourceMinLod
 from check import gpu_test_timeout, timed_out   # per-program time limit (LEONIDA_GPU_TEST_TIMEOUT)
 from check import failure   # "exit <status>: <last lines>", check.py's detail for a program that exited non-zero
 from check import run_readback
@@ -355,8 +354,36 @@ def f16_interp_fallback() -> bool:
     return _device_per_vertex() is False
 
 
+def min_lod_fallback() -> bool:
+    """LEONIDA_MINLOD_FALLBACK=1 (or 0): translate with --min-lod-fallback, so the clamp tests sample with gradients
+    scaled to the clamp instead of the MinLod operand. Unset, it is on where the device has no shaderResourceMinLod:
+    tools/vk_subgroup_info.py reports shader_resource_min_lod false (Intel's Windows iGPU driver). build.py and check.py
+    take only the variable."""
+    v = (os.environ.get("LEONIDA_MINLOD_FALLBACK") or "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    return _device_min_lod() is False
+
+
 _PER_VERTEX = []
 _BARYCENTRIC_FALLBACK = []
+_MIN_LOD = []
+
+
+def _device_min_lod():
+    """shader_resource_min_lod from tools/vk_subgroup_info.py for the device the tests run on (cached), or None."""
+    if not _MIN_LOD:
+        answer = None
+        try:
+            r = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "tools", "vk_subgroup_info.py")],
+                               capture_output=True, text=True, timeout=60)
+            answer = json.loads(r.stdout.strip().splitlines()[-1]).get("shader_resource_min_lod")
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError, AttributeError):
+            pass
+        _MIN_LOD.append(answer if isinstance(answer, bool) else None)
+    return _MIN_LOD[0]
 
 
 def _device_per_vertex():
@@ -944,7 +971,7 @@ def run_suite(a, work: str) -> int:
             cmd.append("--f16-interp-fallback")
         if TEXOFF_FALLBACK:   # image_sample*_o: offset folded into the coordinate, no VK_KHR_maintenance8
             cmd.append("--texel-offset-fallback")
-        if MINLOD_FALLBACK:   # image_sample*_cl: gradients scaled to the clamp, no shaderResourceMinLod
+        if min_lod_fallback():   # image_sample*_cl: gradients scaled to the clamp, no shaderResourceMinLod
             cmd.append("--min-lod-fallback")
         if MESH_COMPUTE:   # mesh shaders as compute writing to a buffer, drawn by tools/mesh_compute_vs.py
             cmd.append("--mesh-compute")

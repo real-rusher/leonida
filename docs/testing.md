@@ -689,10 +689,12 @@ without it they're skipped, which is expected, not a failure. To test the fallba
 ## GPUs without shaderResourceMinLod (Intel's Windows iGPU drivers)
 
 `ps_texture_cl`, `ps_texture_b_cl` and `ps_texture_grad_cl_a16` clamp the LOD with the `MinLod` image operand, which
-needs `shaderResourceMinLod`; without it they're skipped, which is expected, not a failure. To test the fallback, set
-`LEONIDA_MINLOD_FALLBACK=1` **for both `build.py` and `check.py`** (or for `run_gpu_tests.py`): the clamp then
-scales the sample's gradients instead (`docs/design.md`, "Min-LOD clamp forms"), and the modules declare no `MinLod`.
-`tests/test_min_lod_fallback.py` checks the arithmetic without a GPU.
+needs `shaderResourceMinLod`. `run_gpu_tests.py` asks `tools/vk_subgroup_info.py` whether the device has it and, where
+it doesn't, translates with `--min-lod-fallback`: the clamp then scales the sample's gradients instead
+(`docs/design.md`, "Min-LOD clamp forms"), and the modules declare no `MinLod`. `LEONIDA_MINLOD_FALLBACK=1` forces
+the fallback and `=0` the `MinLod` operand, which such a device skips (expected, not a failure). `build.py` and
+`check.py` don't ask the device: set `LEONIDA_MINLOD_FALLBACK=1` for `build.py`. `tests/test_min_lod_fallback.py`
+checks the arithmetic without a GPU.
 
 ## Fused multiply-add: GLSL Fma or OpFmaKHR
 

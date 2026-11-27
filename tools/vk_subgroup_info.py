@@ -47,6 +47,11 @@ the fallback (correct, one geometry-shader stage slower); LEONIDA_BARY_FALLBACK=
 max_push_constants_size is VkPhysicalDeviceProperties.limits.maxPushConstantsSize in bytes. The default shader
 contract uses 144 bytes (152 with --mesh-compute); where a device reports less (e.g. 128 on AMD's Windows driver for
 RDNA2 iGPUs and some Intel Arc drivers), make_game.py translates with --pc-tail-ubo.
+
+shader_resource_min_lod is VkPhysicalDeviceFeatures.shaderResourceMinLod, which the MinLod image operand of the
+image_sample*_cl forms needs (docs/design.md, "Min-LOD clamp forms"). Intel's Windows iGPU driver reports it as false
+(Arrow Lake-HX, 32.0.101.8132); where it is false, make_game.py and run_gpu_tests.py translate with
+--min-lod-fallback.
 Usage: `python -I tools/vk_subgroup_info.py --help` lists the options.
 """
 import argparse
@@ -107,6 +112,9 @@ F12_BUFFER_DEVICE_ADDRESS = 16 + 4 * 38
 F13_SUBGROUP_SIZE_CONTROL = 16 + 4 * 7
 F13_SYNCHRONIZATION2 = 16 + 4 * 9
 F13_DYNAMIC_RENDERING = 16 + 4 * 12
+# VkPhysicalDeviceFeatures2.features: shaderResourceMinLod is member 43 of VkPhysicalDeviceFeatures
+# (robustBufferAccess = 0 ... shaderInt16 = 41, shaderResourceResidency = 42)
+F2_SHADER_RESOURCE_MIN_LOD = 16 + 4 * 43
 PROPS_DEVICE_TYPE = 16      # offsets in VkPhysicalDeviceProperties
 PROPS_VENDOR_ID = 8
 PROPS_DEVICE_ID = 12
@@ -341,7 +349,8 @@ def query(*, stage_caps=False) -> dict:
                           bool(u32(bary, 16)) and u32(drv, 16) != VK_DRIVER_ID_MOLTENVK,
                           int.from_bytes(raw[PROPS_MAX_PUSH_CONSTANTS_SIZE:PROPS_MAX_PUSH_CONSTANTS_SIZE + 4], "little"),
                           int.from_bytes(raw[PROPS_VENDOR_ID:PROPS_VENDOR_ID + 4], "little"),
-                          int.from_bytes(raw[PROPS_DEVICE_ID:PROPS_DEVICE_ID + 4], "little"), u32(drv, 16))
+                          int.from_bytes(raw[PROPS_DEVICE_ID:PROPS_DEVICE_ID + 4], "little"), u32(drv, 16),
+                          bool(u32(f2, F2_SHADER_RESOURCE_MIN_LOD)))
         if chosen is None:
             if device_filter:
                 raise RuntimeError(
@@ -350,7 +359,7 @@ def query(*, stage_caps=False) -> dict:
                 )
             raise RuntimeError("no Vulkan 1.3 GPU with the features and graphics queue the runtime needs")
         (name, subgroup_size, supported_stages, lo, hi, required_stages, max_workgroup_subgroups,
-         sgc, per_vertex, max_push_constants_size, vendor, device, driver) = chosen
+         sgc, per_vertex, max_push_constants_size, vendor, device, driver, min_lod) = chosen
         if per_vertex:
             # The feature counts only with its extension listed (RADV sets it on gfx90c without one).
             # Reuse the Vulkan 1.2 extension set already fetched above, and query Vulkan 1.3 devices only once chosen.
@@ -379,6 +388,7 @@ def query(*, stage_caps=False) -> dict:
             "per_vertex_inputs": per_vertex,
             "barycentric_fallback": barycentric_fallback(vendor, device, driver),
             "max_push_constants_size": max_push_constants_size,
+            "shader_resource_min_lod": min_lod,
             "vendor_id": vendor,
             "device_id": device,
             "driver_id": driver,
