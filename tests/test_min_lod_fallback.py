@@ -133,6 +133,9 @@ def _run(size, gx, gy, minlod, word0, word2, literal, ncoord=None):
         g.sgpr_imm = {16: word0, 18: word2}
     ox, oy = g.min_lod_grads("%img", ("%gx", "%gy"), ncoord, spatial, "%minlod", {"r": 16})
     consts = {name: v for v, name in g.consts.items()}
+    # %float constants are OpConstants of their own (Gen.fconsts: bits -> id), not bitcasts of uint ones
+    consts.update((name, np.array([bits], np.uint32).view(f32)[0])
+                  for bits, name in getattr(g, "fconsts", {}).items())
     vals = {"%gx": np.array(gx, f32).reshape(-1), "%gy": np.array(gy, f32).reshape(-1), "%minlod": f32(minlod)}
     chains = {}
     sgpr = {16: word0, 18: word2}
